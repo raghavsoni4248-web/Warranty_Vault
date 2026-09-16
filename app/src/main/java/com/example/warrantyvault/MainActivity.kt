@@ -2,23 +2,37 @@ package com.example.warrantyvault
 
 import android.Manifest
 import android.app.AlarmManager
+import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.view.LayoutInflater
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.switchmaterial.SwitchMaterial
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -26,7 +40,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var dbHelper: DatabaseHelper
     private var selectedPurchaseDate: String = ""
@@ -34,7 +48,11 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var ivReceiptPreview: ImageView
     private lateinit var btnSelectDate: Button
-    private lateinit var tvReceiptList: TextView
+    private lateinit var llReceiptContainer: LinearLayout
+
+    private lateinit var etItemName: EditText
+    private lateinit var etStoreName: EditText
+    private lateinit var etPrice: EditText
 
     private val cameraLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
@@ -49,48 +67,59 @@ class MainActivity : ComponentActivity() {
                 val compressedFile = ImageCompressor.compressImage(file)
                 capturedImageFile = compressedFile
                 ivReceiptPreview.setImageURI(android.net.Uri.fromFile(compressedFile))
-                Toast.makeText(this, "Receipt photo captured & compressed!", Toast.LENGTH_SHORT).show()
+                ivReceiptPreview.visibility = View.VISIBLE
+
+                scanReceiptText(bitmap)
             }
         }
     }
 
-    // Dedicated Launcher for Camera Permission
     private val cameraPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-        if (isGranted) {
-            launchCamera()
-        } else {
-            Toast.makeText(this, "Camera permission denied.", Toast.LENGTH_SHORT).show()
-        }
+        if (isGranted) launchCamera() else Toast.makeText(this, "Camera permission denied.", Toast.LENGTH_SHORT).show()
     }
 
-    // Dedicated Launcher for Notification Permission (Prevents launching camera on grant)
     private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-        if (isGranted) {
-            Toast.makeText(this, "Notifications enabled!", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(this, "Notification permission denied.", Toast.LENGTH_SHORT).show()
-        }
+        if (isGranted) Toast.makeText(this, "Notifications enabled!", Toast.LENGTH_SHORT).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Load theme preference before layout initialization
+        val sharedPref = getSharedPreferences("ThemePrefs", Context.MODE_PRIVATE)
+        val isDarkMode = sharedPref.getBoolean("isDarkMode", false)
+        if (isDarkMode) {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+        } else {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
+        }
+
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         dbHelper = DatabaseHelper(this)
 
-        val etItemName = findViewById<EditText>(R.id.etItemName)
-        val etStoreName = findViewById<EditText>(R.id.etStoreName)
+        val switchDarkMode = findViewById<SwitchMaterial>(R.id.switchDarkMode)
+        switchDarkMode.isChecked = isDarkMode
+        switchDarkMode.setOnCheckedChangeListener { _, isChecked ->
+            sharedPref.edit().putBoolean("isDarkMode", isChecked).apply()
+            if (isChecked) {
+                AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+            } else {
+                AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
+            }
+        }
+
+        etItemName = findViewById(R.id.etItemName)
+        etStoreName = findViewById(R.id.etStoreName)
         val etCategory = findViewById<EditText>(R.id.etCategory)
-        val etPrice = findViewById<EditText>(R.id.etPrice)
+        etPrice = findViewById(R.id.etPrice)
         val etDurationDays = findViewById<EditText>(R.id.etDurationDays)
         btnSelectDate = findViewById(R.id.btnSelectDate)
         val btnCapturePhoto = findViewById<Button>(R.id.btnCapturePhoto)
         val btnSaveReceipt = findViewById<Button>(R.id.btnSaveReceipt)
         val btnTestNotification = findViewById<Button>(R.id.btnTestNotification)
         ivReceiptPreview = findViewById(R.id.ivReceiptPreview)
-        tvReceiptList = findViewById(R.id.tvReceiptList)
+        llReceiptContainer = findViewById(R.id.llReceiptContainer)
 
-        // Request notification permission safely for Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -111,11 +140,8 @@ class MainActivity : ComponentActivity() {
             ).show()
         }
 
-        btnCapturePhoto.setOnClickListener {
-            checkAndLaunchCamera()
-        }
+        btnCapturePhoto.setOnClickListener { checkAndLaunchCamera() }
 
-        // Test push notification scheduled for 5 seconds in the future
         btnTestNotification.setOnClickListener {
             val name = etItemName.text.toString().ifEmpty { "Sample Receipt Item" }
             scheduleTestNotification(name)
@@ -164,81 +190,166 @@ class MainActivity : ComponentActivity() {
         loadReceipts()
     }
 
+    private fun scanReceiptText(bitmap: Bitmap) {
+        val image = InputImage.fromBitmap(bitmap, 0)
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+
+        recognizer.process(image)
+            .addOnSuccessListener { visionText: Text ->
+                val textLines = visionText.text.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+                if (textLines.isEmpty()) return@addOnSuccessListener
+
+                val ignoreKeywords = listOf("receipt", "welcome", "tax", "invoice", "tel", "phone", "date", "cashier", "thank")
+                val storeCandidate = textLines.take(6).firstOrNull { line ->
+                    ignoreKeywords.none { line.lowercase().contains(it) } && line.length > 2 && !line.matches(Regex(""".*\d{3}-?\d{3}.*"""))
+                }
+                if (etStoreName.text.isEmpty() && storeCandidate != null) etStoreName.setText(storeCandidate)
+
+                val itemCandidate = textLines.drop(1).take(5).firstOrNull { line ->
+                    ignoreKeywords.none { line.lowercase().contains(it) } && line != storeCandidate
+                }
+                if (etItemName.text.isEmpty() && itemCandidate != null) etItemName.setText(itemCandidate)
+
+                val totalLine = textLines.firstOrNull { it.uppercase().contains("TOTAL") || it.uppercase().contains("AMOUNT") }
+                var extractedPrice: Double? = null
+                if (totalLine != null) {
+                    val priceMatch = Regex("""\d+[.,]\d{2}""").find(totalLine)
+                    extractedPrice = priceMatch?.value?.replace(",", ".")?.toDoubleOrNull()
+                }
+                if (extractedPrice == null) {
+                    extractedPrice = Regex("""\b\d+[.,]\d{2}\b""")
+                        .findAll(visionText.text)
+                        .mapNotNull { it.value.replace(",", ".").toDoubleOrNull() }
+                        .filter { it < 5000.0 }
+                        .maxOrNull()
+                }
+                if (extractedPrice != null && etPrice.text.isEmpty()) {
+                    etPrice.setText(String.format(Locale.US, "%.2f", extractedPrice))
+                }
+
+                val dateMatch = Regex("""\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})\b""").find(visionText.text)
+                if (dateMatch != null && selectedPurchaseDate.isEmpty()) {
+                    selectedPurchaseDate = dateMatch.value.replace('/', '-')
+                    btnSelectDate.text = "Purchased: $selectedPurchaseDate"
+                }
+            }
+    }
+
+    private fun loadReceipts() {
+        llReceiptContainer.removeAllViews()
+        val cursor = dbHelper.getAllItems()
+
+        if (cursor.count == 0) {
+            val emptyTv = TextView(this).apply {
+                text = "No saved receipts in your vault yet."
+                setTextColor(Color.parseColor("#64748B"))
+                textSize = 14f
+                setPadding(16, 16, 16, 16)
+            }
+            llReceiptContainer.addView(emptyTv)
+            cursor.close()
+            return
+        }
+
+        val inflater = LayoutInflater.from(this)
+
+        while (cursor.moveToNext()) {
+            val name = cursor.getString(cursor.getColumnIndexOrThrow("item_name"))
+            val store = cursor.getString(cursor.getColumnIndexOrThrow("store_name"))
+            val price = cursor.getDouble(cursor.getColumnIndexOrThrow("price"))
+            val expiry = cursor.getString(cursor.getColumnIndexOrThrow("calculated_expiration"))
+            val status = cursor.getString(cursor.getColumnIndexOrThrow("status_flag"))
+            val imagePath = cursor.getString(cursor.getColumnIndexOrThrow("image_path"))
+            val category = cursor.getString(cursor.getColumnIndexOrThrow("category"))
+
+            val cardView = inflater.inflate(R.layout.item_receipt_card, llReceiptContainer, false)
+
+            val ivThumbnail = cardView.findViewById<ImageView>(R.id.ivCardThumbnail)
+            val tvItemName = cardView.findViewById<TextView>(R.id.tvCardItemName)
+            val tvSubDetails = cardView.findViewById<TextView>(R.id.tvCardSubDetails)
+            val tvExpiry = cardView.findViewById<TextView>(R.id.tvCardExpiry)
+            val tvPrice = cardView.findViewById<TextView>(R.id.tvCardPrice)
+            val tvStatusPill = cardView.findViewById<TextView>(R.id.tvCardStatusPill)
+
+            tvItemName.text = name
+            tvSubDetails.text = if (category.isNotEmpty()) "$store • $category" else store
+            tvExpiry.text = "Expires: $expiry"
+            tvPrice.text = String.format(Locale.US, "$%.2f", price)
+
+            val imageFile = File(imagePath)
+            if (imagePath != "no_image" && imageFile.exists()) {
+                ivThumbnail.setImageURI(android.net.Uri.fromFile(imageFile))
+                ivThumbnail.clearColorFilter()
+            } else {
+                ivThumbnail.setImageResource(android.R.drawable.ic_menu_gallery)
+                ivThumbnail.setColorFilter(Color.parseColor("#94A3B8"))
+            }
+
+            val isExpired = status == "Expired"
+            val pillBg = GradientDrawable().apply {
+                cornerRadius = 30f
+                setColor(Color.parseColor(if (isExpired) "#FDE8E8" else "#DEF7EC"))
+            }
+            tvStatusPill.background = pillBg
+            tvStatusPill.text = if (isExpired) "EXPIRED" else "ACTIVE"
+            tvStatusPill.setTextColor(Color.parseColor(if (isExpired) "#9B1C1C" else "#03543F"))
+
+            cardView.setOnClickListener {
+                showReceiptDetailDialog(name, store, category, price, expiry, status, imagePath)
+            }
+
+            llReceiptContainer.addView(cardView)
+        }
+        cursor.close()
+    }
+
+    private fun showReceiptDetailDialog(
+        name: String, store: String, category: String, price: Double,
+        expiry: String, status: String, imagePath: String
+    ) {
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("Receipt: $name")
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 32, 32, 32)
+        }
+
+        val detailsTv = TextView(this).apply {
+            text = "Store: $store\nCategory: $category\nPrice: $$price\nExpires: $expiry\nStatus: $status"
+            textSize = 15f
+            setPadding(0, 0, 0, 24)
+        }
+        layout.addView(detailsTv)
+
+        val imageFile = File(imagePath)
+        if (imagePath != "no_image" && imageFile.exists()) {
+            val imageView = ImageView(this).apply {
+                setImageURI(android.net.Uri.fromFile(imageFile))
+                adjustViewBounds = true
+                maxHeight = 900
+            }
+            layout.addView(imageView)
+        }
+
+        builder.setView(layout)
+        builder.setPositiveButton("Close") { dialog, _ -> dialog.dismiss() }
+        builder.show()
+    }
+
     private fun scheduleTestNotification(itemName: String) {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (!alarmManager.canScheduleExactAlarms()) {
-                val intent = Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
-                startActivity(intent)
-                Toast.makeText(this, "Please enable 'Alarms & reminders' permission in Settings.", Toast.LENGTH_LONG).show()
-                return
-            }
-        }
-
-        val intent = Intent(this, AlarmReceiver::class.java).apply {
-            putExtra("item_name", itemName)
-        }
-
-        val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            1001,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val triggerTime = System.currentTimeMillis() + 5000
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            }
-            Toast.makeText(this, "Notification scheduled in 5 seconds!", Toast.LENGTH_LONG).show()
-        } catch (e: SecurityException) {
-            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            Toast.makeText(this, "Scheduled test alarm in 5 seconds.", Toast.LENGTH_LONG).show()
-        }
+        val intent = Intent(this, AlarmReceiver::class.java).apply { putExtra("item_name", itemName) }
+        val pendingIntent = PendingIntent.getBroadcast(this, 1001, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        alarmManager.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 5000, pendingIntent)
+        Toast.makeText(this, "Notification in 5 seconds!", Toast.LENGTH_SHORT).show()
     }
 
     private fun scheduleWarrantyAlarm(itemName: String, expirationDateStr: String, reqCode: Int) {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (!alarmManager.canScheduleExactAlarms()) {
-                val intent = Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
-                startActivity(intent)
-                Toast.makeText(this, "Please grant 'Alarms & reminders' permission in Settings.", Toast.LENGTH_LONG).show()
-                return
-            }
-        }
-
-        val triggerTime = System.currentTimeMillis() + (2 * 60 * 1000) // 2 minutes from now
-
-        val intent = Intent(this, AlarmReceiver::class.java).apply {
-            putExtra("item_name", itemName)
-        }
-
-        val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            reqCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            }
-            val formattedTime = SimpleDateFormat("hh:mm:ss a", Locale.US).format(Date(triggerTime))
-            Toast.makeText(this, "Alarm set to ring in 2 minutes (at $formattedTime)!", Toast.LENGTH_LONG).show()
-        } catch (e: SecurityException) {
-            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            Toast.makeText(this, "Alarm scheduled in 2 minutes.", Toast.LENGTH_LONG).show()
-        }
+        val intent = Intent(this, AlarmReceiver::class.java).apply { putExtra("item_name", itemName) }
+        val pendingIntent = PendingIntent.getBroadcast(this, reqCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        alarmManager.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + (2 * 60 * 1000), pendingIntent)
     }
 
     private fun checkAndLaunchCamera() {
@@ -250,29 +361,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchCamera() {
-        val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-        cameraLauncher.launch(cameraIntent)
+        cameraLauncher.launch(Intent(MediaStore.ACTION_IMAGE_CAPTURE))
     }
 
     private fun calculateExpirationDate(purchaseDateStr: String, durationDays: Int): String {
         val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         val date = sdf.parse(purchaseDateStr) ?: Date()
-        val calendar = Calendar.getInstance()
-        calendar.time = date
-        calendar.add(Calendar.DAY_OF_YEAR, durationDays)
+        val calendar = Calendar.getInstance().apply {
+            time = date
+            add(Calendar.DAY_OF_YEAR, durationDays)
+        }
         return sdf.format(calendar.time)
     }
 
     private fun evaluateStatus(expirationDateStr: String): String {
         val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         val expDate = sdf.parse(expirationDateStr) ?: Date()
-        val today = Date()
-
-        return if (expDate.before(today)) {
-            "Expired"
-        } else {
-            "Active"
-        }
+        return if (expDate.before(Date())) "Expired" else "Active"
     }
 
     private fun clearForm(vararg inputs: EditText) {
@@ -281,31 +386,6 @@ class MainActivity : ComponentActivity() {
         selectedPurchaseDate = ""
         capturedImageFile = null
         ivReceiptPreview.setImageDrawable(null)
-    }
-
-    private fun loadReceipts() {
-        val cursor = dbHelper.getAllItems()
-        val builder = StringBuilder()
-
-        while (cursor.moveToNext()) {
-            val nameIndex = cursor.getColumnIndex("item_name")
-            val storeIndex = cursor.getColumnIndex("store_name")
-            val priceIndex = cursor.getColumnIndex("price")
-            val expiryIndex = cursor.getColumnIndex("calculated_expiration")
-            val statusIndex = cursor.getColumnIndex("status_flag")
-
-            if (nameIndex != -1 && storeIndex != -1 && expiryIndex != -1 && statusIndex != -1 && priceIndex != -1) {
-                val name = cursor.getString(nameIndex)
-                val store = cursor.getString(storeIndex)
-                val price = cursor.getDouble(priceIndex)
-                val expiry = cursor.getString(expiryIndex)
-                val status = cursor.getString(statusIndex)
-
-                builder.append("• $name ($store) - $$price\n  Expires: $expiry [$status]\n\n")
-            }
-        }
-        cursor.close()
-
-        tvReceiptList.text = if (builder.isEmpty()) "No receipts stored yet in SQLite." else builder.toString()
+        ivReceiptPreview.visibility = View.GONE
     }
 }

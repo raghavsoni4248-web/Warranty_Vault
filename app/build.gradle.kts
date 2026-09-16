@@ -37,6 +37,8 @@ android {
 
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
+    implementation("com.google.mlkit:text-recognition:16.0.0")
+    implementation("com.google.android.material:material:1.11.0")
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
