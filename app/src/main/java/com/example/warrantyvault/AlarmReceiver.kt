@@ -18,7 +18,6 @@ class AlarmReceiver : BroadcastReceiver() {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channelId = "warranty_priority_channel"
 
-        // Setup notification channel for Android 8.0+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
@@ -31,7 +30,6 @@ class AlarmReceiver : BroadcastReceiver() {
             notificationManager.createNotificationChannel(channel)
         }
 
-        // Configure color and message based on the urgency tier
         val (accentColor, alertTitle, alertMessage) = when (daysLeft) {
             30 -> Triple(
                 Color.parseColor("#2563EB"), // Blue
@@ -65,7 +63,6 @@ class AlarmReceiver : BroadcastReceiver() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
 
-        // Use a unique notification ID based on current time so alerts don't overwrite each other
         notificationManager.notify(System.currentTimeMillis().toInt(), builder.build())
     }
 }
