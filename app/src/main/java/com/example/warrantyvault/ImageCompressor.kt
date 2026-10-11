@@ -2,24 +2,36 @@ package com.example.warrantyvault
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 
 object ImageCompressor {
-    // Compresses high-res photo receipts to ~300KB JPEGs to reduce storage overhead
-    fun compressImage(imageFile: File): File {
-        val bitmap = BitmapFactory.decodeFile(imageFile.absolutePath) ?: return imageFile
-        val outputStream = ByteArrayOutputStream()
+    fun compressImage(imageFile: File, maxWidth: Int = 1024, maxHeight: Int = 1024, quality: Int = 80): File {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(imageFile.absolutePath, options)
 
-        // Compress using 70% JPEG quality target
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, outputStream)
+        var actualWidth = options.outWidth
+        var actualHeight = options.outHeight
 
-        val fileOutputStream = FileOutputStream(imageFile)
-        fileOutputStream.write(outputStream.toByteArray())
-        fileOutputStream.flush()
-        fileOutputStream.close()
+        var scaleFactor = 1.0f
+        val maxDim = maxWidth.toFloat()
 
-        return imageFile
+        if (actualWidth > maxDim || actualHeight > maxDim) {
+            val widthRatio = actualWidth / maxDim
+            val heightRatio = actualHeight / maxDim
+            scaleFactor = Math.max(widthRatio, heightRatio)
+        }
+
+        options.inJustDecodeBounds = false
+        options.inSampleSize = scaleFactor.toInt().coerceAtLeast(1)
+
+        val scaledBitmap = BitmapFactory.decodeFile(imageFile.absolutePath, options)
+        val compressedFile = File(imageFile.parent, "compressed_${System.currentTimeMillis()}.jpg")
+        val out = FileOutputStream(compressedFile)
+        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        out.flush()
+        out.close()
+
+        return compressedFile
     }
 }
