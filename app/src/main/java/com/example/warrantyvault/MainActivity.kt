@@ -10,10 +10,11 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.view.LayoutInflater
 import android.view.View
@@ -27,7 +28,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
-import com.google.android.material.card.MaterialCardView
 import com.google.android.material.switchmaterial.SwitchMaterial
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
@@ -53,6 +53,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etItemName: EditText
     private lateinit var etStoreName: EditText
     private lateinit var etPrice: EditText
+
+    // Live countdown timer handler to refresh cards every minute
+    private val countdownHandler = Handler(Looper.getMainLooper())
+    private val countdownRunnable = object : Runnable {
+        override fun run() {
+            loadReceipts()
+            countdownHandler.postDelayed(this, 60000)
+        }
+    }
 
     private val cameraLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
@@ -83,7 +92,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Load theme preference before layout initialization
+        // Load theme preference before layout is inflated
         val sharedPref = getSharedPreferences("ThemePrefs", Context.MODE_PRIVATE)
         val isDarkMode = sharedPref.getBoolean("isDarkMode", false)
         if (isDarkMode) {
@@ -180,14 +189,24 @@ class MainActivity : AppCompatActivity() {
             )
 
             if (rowId != -1L) {
-                scheduleWarrantyAlarm(name, calculatedExpiration, rowId.toInt())
-                Toast.makeText(this, "Receipt Saved!", Toast.LENGTH_SHORT).show()
+                scheduleTieredWarrantyAlarms(name, calculatedExpiration, rowId.toInt())
+                Toast.makeText(this, "Receipt Saved & Alarms Scheduled!", Toast.LENGTH_SHORT).show()
                 clearForm(etItemName, etStoreName, etCategory, etPrice, etDurationDays)
                 loadReceipts()
             }
         }
 
         loadReceipts()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        countdownHandler.post(countdownRunnable) // Start live countdown ticking
+    }
+
+    override fun onPause() {
+        super.onPause()
+        countdownHandler.removeCallbacks(countdownRunnable) // Pause live countdown when app is backgrounded
     }
 
     private fun scanReceiptText(bitmap: Bitmap) {
@@ -273,7 +292,7 @@ class MainActivity : AppCompatActivity() {
 
             tvItemName.text = name
             tvSubDetails.text = if (category.isNotEmpty()) "$store • $category" else store
-            tvExpiry.text = "Expires: $expiry"
+            tvExpiry.text = getRemainingTimeFormatted(expiry) // Live countdown formatting
             tvPrice.text = String.format(Locale.US, "$%.2f", price)
 
             val imageFile = File(imagePath)
@@ -345,11 +364,52 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Notification in 5 seconds!", Toast.LENGTH_SHORT).show()
     }
 
-    private fun scheduleWarrantyAlarm(itemName: String, expirationDateStr: String, reqCode: Int) {
+    private fun scheduleTieredWarrantyAlarms(itemName: String, expirationDateStr: String, baseReqCode: Int) {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val expDate = sdf.parse(expirationDateStr) ?: return
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, AlarmReceiver::class.java).apply { putExtra("item_name", itemName) }
-        val pendingIntent = PendingIntent.getBroadcast(this, reqCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        alarmManager.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + (2 * 60 * 1000), pendingIntent)
+
+        // Thresholds: 30 days before, 15 days before, 1 day before
+        val thresholds = listOf(
+            30 to (30L * 24 * 60 * 60 * 1000),
+            15 to (15L * 24 * 60 * 60 * 1000),
+            1 to (1L * 24 * 60 * 60 * 1000)
+        )
+
+        thresholds.forEachIndexed { index, (daysLeft, offsetMillis) ->
+            val triggerTime = expDate.time - offsetMillis
+
+            if (triggerTime > System.currentTimeMillis()) {
+                val intent = Intent(this, AlarmReceiver::class.java).apply {
+                    putExtra("item_name", itemName)
+                    putExtra("days_left", daysLeft)
+                }
+
+                val requestCode = (baseReqCode * 100) + index
+                val pendingIntent = PendingIntent.getBroadcast(
+                    this,
+                    requestCode,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            }
+        }
+    }
+
+    private fun getRemainingTimeFormatted(expirationDateStr: String): String {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val expDate = sdf.parse(expirationDateStr) ?: return "Invalid Date"
+
+        val diffMillis = expDate.time - System.currentTimeMillis()
+        if (diffMillis <= 0) return "⚠️ Expired"
+
+        val days = diffMillis / (1000 * 60 * 60 * 24)
+        val hours = (diffMillis / (1000 * 60 * 60)) % 24
+        val minutes = (diffMillis / (1000 * 60)) % 60
+
+        return "⏳ ${days}d ${hours}h ${minutes}m remaining"
     }
 
     private fun checkAndLaunchCamera() {
