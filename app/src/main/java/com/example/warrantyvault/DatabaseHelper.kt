@@ -10,9 +10,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "warranty_vault.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3 // Upgraded version for Maintenance feature
 
-        const val TABLE_NAME = "receipts"
+        // Receipts Table
+        const val TABLE_RECEIPTS = "receipts"
         const val COLUMN_ID = "id"
         const val COLUMN_ITEM_NAME = "item_name"
         const val COLUMN_STORE_NAME = "store_name"
@@ -24,10 +25,19 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COLUMN_IMAGE_PATH = "image_path"
         const val COLUMN_STATUS_FLAG = "status_flag"
         const val COLUMN_NOTIFICATION_IDS = "notification_ids"
+
+        // Maintenance Table
+        const val TABLE_MAINTENANCE = "maintenance_tasks"
+        const val COLUMN_TASK_ID = "task_id"
+        const val COLUMN_RECEIPT_ID = "receipt_id"
+        const val COLUMN_TASK_TITLE = "task_title"
+        const val COLUMN_INTERVAL_DAYS = "interval_days"
+        const val COLUMN_NEXT_DUE_DATE = "next_due_date"
+        const val COLUMN_MANUAL_NOTES = "manual_notes"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
-        val createTableQuery = ("CREATE TABLE $TABLE_NAME ("
+        val createReceiptsTable = ("CREATE TABLE $TABLE_RECEIPTS ("
                 + "$COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT, "
                 + "$COLUMN_ITEM_NAME TEXT, "
                 + "$COLUMN_STORE_NAME TEXT, "
@@ -39,11 +49,22 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 + "$COLUMN_IMAGE_PATH TEXT, "
                 + "$COLUMN_STATUS_FLAG TEXT, "
                 + "$COLUMN_NOTIFICATION_IDS TEXT)")
-        db.execSQL(createTableQuery)
+
+        val createMaintenanceTable = ("CREATE TABLE $TABLE_MAINTENANCE ("
+                + "$COLUMN_TASK_ID INTEGER PRIMARY KEY AUTOINCREMENT, "
+                + "$COLUMN_RECEIPT_ID INTEGER, "
+                + "$COLUMN_TASK_TITLE TEXT, "
+                + "$COLUMN_INTERVAL_DAYS INTEGER, "
+                + "$COLUMN_NEXT_DUE_DATE TEXT, "
+                + "$COLUMN_MANUAL_NOTES TEXT)")
+
+        db.execSQL(createReceiptsTable)
+        db.execSQL(createMaintenanceTable)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_NAME")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_RECEIPTS")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_MAINTENANCE")
         onCreate(db)
     }
 
@@ -65,11 +86,28 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COLUMN_STATUS_FLAG, statusFlag)
             put(COLUMN_NOTIFICATION_IDS, notificationIds)
         }
-        return db.insert(TABLE_NAME, null, values)
+        return db.insert(TABLE_RECEIPTS, null, values)
+    }
+
+    fun insertMaintenanceTask(receiptId: Long, title: String, intervalDays: Int, nextDueDate: String, notes: String): Long {
+        val db = this.writableDatabase
+        val values = ContentValues().apply {
+            put(COLUMN_RECEIPT_ID, receiptId)
+            put(COLUMN_TASK_TITLE, title)
+            put(COLUMN_INTERVAL_DAYS, intervalDays)
+            put(COLUMN_NEXT_DUE_DATE, nextDueDate)
+            put(COLUMN_MANUAL_NOTES, notes)
+        }
+        return db.insert(TABLE_MAINTENANCE, null, values)
+    }
+
+    fun getTasksForReceipt(receiptId: Long): Cursor {
+        val db = this.readableDatabase
+        return db.rawQuery("SELECT * FROM $TABLE_MAINTENANCE WHERE$COLUMN_RECEIPT_ID = ?", arrayOf(receiptId.toString()))
     }
 
     fun getAllItems(): Cursor {
         val db = this.readableDatabase
-        return db.rawQuery("SELECT * FROM $TABLE_NAME ORDER BY $COLUMN_ID DESC", null)
+        return db.rawQuery("SELECT * FROM $TABLE_RECEIPTS ORDER BY$COLUMN_ID DESC", null)
     }
 }
