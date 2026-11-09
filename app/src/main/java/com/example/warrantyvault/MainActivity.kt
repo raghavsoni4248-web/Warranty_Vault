@@ -201,12 +201,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        countdownHandler.post(countdownRunnable) // Start live countdown ticking
+        countdownHandler.post(countdownRunnable)
     }
 
     override fun onPause() {
         super.onPause()
-        countdownHandler.removeCallbacks(countdownRunnable) // Pause live countdown when app is backgrounded
+        countdownHandler.removeCallbacks(countdownRunnable)
     }
 
     private fun scanReceiptText(bitmap: Bitmap) {
@@ -273,6 +273,7 @@ class MainActivity : AppCompatActivity() {
         val inflater = LayoutInflater.from(this)
 
         while (cursor.moveToNext()) {
+            val id = cursor.getLong(cursor.getColumnIndexOrThrow("id"))
             val name = cursor.getString(cursor.getColumnIndexOrThrow("item_name"))
             val store = cursor.getString(cursor.getColumnIndexOrThrow("store_name"))
             val price = cursor.getDouble(cursor.getColumnIndexOrThrow("price"))
@@ -292,7 +293,7 @@ class MainActivity : AppCompatActivity() {
 
             tvItemName.text = name
             tvSubDetails.text = if (category.isNotEmpty()) "$store • $category" else store
-            tvExpiry.text = getRemainingTimeFormatted(expiry) // Live countdown formatting
+            tvExpiry.text = getRemainingTimeFormatted(expiry)
             tvPrice.text = String.format(Locale.US, "$%.2f", price)
 
             val imageFile = File(imagePath)
@@ -314,7 +315,7 @@ class MainActivity : AppCompatActivity() {
             tvStatusPill.setTextColor(Color.parseColor(if (isExpired) "#9B1C1C" else "#03543F"))
 
             cardView.setOnClickListener {
-                showReceiptDetailDialog(name, store, category, price, expiry, status, imagePath)
+                showReceiptDetailDialog(id, name, store, category, price, expiry, status, imagePath)
             }
 
             llReceiptContainer.addView(cardView)
@@ -323,7 +324,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showReceiptDetailDialog(
-        name: String, store: String, category: String, price: Double,
+        receiptId: Long, name: String, store: String, category: String, price: Double,
         expiry: String, status: String, imagePath: String
     ) {
         val builder = AlertDialog.Builder(this)
@@ -346,13 +347,20 @@ class MainActivity : AppCompatActivity() {
             val imageView = ImageView(this).apply {
                 setImageURI(android.net.Uri.fromFile(imageFile))
                 adjustViewBounds = true
-                maxHeight = 900
+                maxHeight = 600
             }
             layout.addView(imageView)
         }
 
         builder.setView(layout)
         builder.setPositiveButton("Close") { dialog, _ -> dialog.dismiss() }
+        builder.setNeutralButton("🛠️ Maintenance & Care") { _, _ ->
+            val intent = Intent(this, MaintenanceActivity::class.java).apply {
+                putExtra("RECEIPT_ID", receiptId)
+                putExtra("ITEM_NAME", name)
+            }
+            startActivity(intent)
+        }
         builder.show()
     }
 
@@ -369,7 +377,6 @@ class MainActivity : AppCompatActivity() {
         val expDate = sdf.parse(expirationDateStr) ?: return
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-        // Thresholds: 30 days before, 15 days before, 1 day before
         val thresholds = listOf(
             30 to (30L * 24 * 60 * 60 * 1000),
             15 to (15L * 24 * 60 * 60 * 1000),
